@@ -422,7 +422,7 @@ __global__ void MatrixMultiplyKernel(
    *   a_storage: compact 1D array of size batch_size x m x n
    *   a_shape: shape of the a array
    *   a_strides: strides of the a array
-   *   b_storage: comapct 2D array of size batch_size x n x p
+   *   b_storage: compact 1D array of size batch_size x n x p
    *   b_shape: shape of the b array
    *   b_strides: strides of the b array
    *
