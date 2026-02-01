@@ -422,6 +422,7 @@ __global__ void reduceKernel(
    */
 
   // __shared__ double cache[BLOCK_DIM]; // Uncomment this line if you want to use shared memory to store partial results
+  extern __shared__ float cache[];
   int out_index[MAX_DIMS];
 
   /// BEGIN HW1_3
@@ -433,32 +434,52 @@ __global__ void reduceKernel(
   // 5. Write the reduced value to out memory
 
   // 1.
-  int global_id = (int)(blockIdx.x * blockDim.x + threadIdx.x);
-  if (global_id >= out_size) return;
-  to_index(global_id, out_shape, out_index, shape_size);
+  // Each block computes one output element, so we use blockIdx.x to identify the output element
+  // Each thread in the block can be used to parallelize the reduction operation
+  int out_id = (int)blockIdx.x;
+  if (out_id >= out_size) return;
+  to_index(out_id, out_shape, out_index, shape_size);
 
   // 2.
   int out_pos = index_to_position(out_index, out_strides, shape_size);
 
   // 3.
+  // Prepare for reduction, base_pos is the starting position for the reduction in a_storage
   int reduce_len = a_shape[reduce_dim];
-  int a_index[MAX_DIMS];
-  for (int d = 0; d < shape_size; d++){
-    a_index[d] = out_index[d];
-  }
-  a_index[reduce_dim] = 0;
-  int base_pos = index_to_position(a_index, a_strides, shape_size);
   int step = a_strides[reduce_dim];
+  int base_pos = 0;
+  for (int d = 0; d < shape_size; d++) {
+    if (d == reduce_dim) continue;
+    base_pos += out_index[d] * a_strides[d];
+  }
 
   // 4.
-  float result = reduce_value;
-  for (int i = 0; i < reduce_len; i++){
+  // Parallel reduction, each thread computes a partial reduction
+  // Each thread processes multiple elements strided by blockDim.x
+  int tid = (int)threadIdx.x;
+
+  float acc = reduce_value;
+  for (int i = tid; i < reduce_len; i += (int)blockDim.x) {
     int a_pos = base_pos + i * step;
-    result = fn(fn_id, result, a_storage[a_pos]);
+    acc = fn(fn_id, acc, a_storage[a_pos]);
   }
 
   /// 5.
-  out[out_pos] = result;
+  // Store the partial result in shared memory
+  // Tree-based reduction in shared memory
+  cache[tid] = acc;
+  __syncthreads();
+
+  for (int offset = (int)blockDim.x >> 1; offset > 0; offset >>= 1) {
+    if (tid < offset) {
+      cache[tid] = fn(fn_id, cache[tid], cache[tid + offset]);
+    }
+    __syncthreads();
+  }
+
+  if (tid == 0) {
+    out[out_pos] = cache[0];
+  }
   /// END HW1_3
 }
 
@@ -779,9 +800,11 @@ extern "C"
     cudaMemcpy(d_a_strides, a_strides, shape_size * sizeof(int), cudaMemcpyHostToDevice);
 
     // Launch kernel
-    int threadsPerBlock = 32;
-    int blocksPerGrid = (out_size + threadsPerBlock - 1) / threadsPerBlock;
-    reduceKernel<<<blocksPerGrid, threadsPerBlock>>>(
+    int threadsPerBlock = 256;                 
+    int blocksPerGrid   = out_size;            
+    size_t shmemBytes   = threadsPerBlock * sizeof(float);
+
+    reduceKernel<<<blocksPerGrid, threadsPerBlock, shmemBytes>>>(
         d_out, d_out_shape, d_out_strides, out_size,
         d_a, d_a_shape, d_a_strides,
         reduce_dim, reduce_value, shape_size, fn_id);
