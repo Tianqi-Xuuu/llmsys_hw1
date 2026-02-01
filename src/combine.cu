@@ -519,8 +519,8 @@ __global__ void MatrixMultiplyKernel(
    *   None (Fills in out array)
    */
 
-  // __shared__ float a_shared[TILE][TILE];
-  // __shared__ float b_shared[TILE][TILE];
+  __shared__ float a_shared[TILE][TILE];
+  __shared__ float b_shared[TILE][TILE];
 
   // In each block, we will compute a batch of the output matrix
   // All the threads in the block will work together to compute this batch
@@ -538,27 +538,50 @@ __global__ void MatrixMultiplyKernel(
   // 6. Synchronize to make sure all threads are done computing the output tile for (row, col)
   // 7. Write the output to global memory
 
-  // 1.
-  int row = blockIdx.x * blockDim.x + threadIdx.x;
-  int col = blockIdx.y * blockDim.y + threadIdx.y;
-  if (row >= out_shape[1] || col >= out_shape[2]) return;
+  int row = blockIdx.x * TILE + threadIdx.x;
+  int col = blockIdx.y * TILE + threadIdx.y;
+
+  int m = out_shape[1];
+  int p = out_shape[2];
   int n = a_shape[2];
 
-  // 2.
-  int out_pos = batch * out_strides[0] + row * out_strides[1] + col * out_strides[2];
-
-  // 3-5. Naive matmul without tiling/shared memory.
   float acc = 0.0f;
-  int a_base = batch * a_batch_stride + row * a_strides[1];
-  int b_base = batch * b_batch_stride + col * b_strides[2];
-  for (int k = 0; k < n; ++k)
-  {
-    acc += a_storage[a_base + k * a_strides[2]] * b_storage[b_base + k * b_strides[1]];
+
+  for (int k0 = 0; k0 < n; k0 += TILE) {
+
+    // ---- Load A tile ----
+    int a_col = k0 + threadIdx.y;
+    if (row < m && a_col < n) {
+      int a_pos = batch * a_batch_stride + row * a_strides[1] + a_col * a_strides[2];
+      a_shared[threadIdx.x][threadIdx.y] = a_storage[a_pos];
+    } else {
+      a_shared[threadIdx.x][threadIdx.y] = 0.0f;
+    }
+
+    // ---- Load B tile ----
+    int b_row = k0 + threadIdx.x;
+    if (b_row < n && col < p) {
+      int b_pos = batch * b_batch_stride + b_row * b_strides[1] + col * b_strides[2];
+      b_shared[threadIdx.x][threadIdx.y] = b_storage[b_pos];
+    } else {
+      b_shared[threadIdx.x][threadIdx.y] = 0.0f;
+    }
+
+    __syncthreads();
+
+    // ---- Compute partial ----
+    #pragma unroll
+    for (int t = 0; t < TILE; ++t) {
+      acc += a_shared[threadIdx.x][t] * b_shared[t][threadIdx.y];
+    }
+
+     __syncthreads();
   }
 
-  // 7.
-  out[out_pos] = acc;
-  
+  if (row < m && col < p) {
+    int out_pos = batch * out_strides[0] + row * out_strides[1] + col * out_strides[2];
+    out[out_pos] = acc;
+  }
   /// END HW1_4
 }
 
@@ -603,9 +626,13 @@ extern "C"
     cudaMemcpy(d_b_shape, b_shape, 3 * sizeof(int), cudaMemcpyHostToDevice);
     cudaMemcpy(d_b_strides, b_strides, 3 * sizeof(int), cudaMemcpyHostToDevice);
 
-    int threadsPerBlock = 32;
-    dim3 blockDims(threadsPerBlock, threadsPerBlock, 1); // Adjust these values based on your specific requirements
-    dim3 gridDims((m + threadsPerBlock - 1) / threadsPerBlock, (p + threadsPerBlock - 1) / threadsPerBlock, batch);
+    int out_batch = out_shape[0];
+    int out_row   = out_shape[1];
+    int out_col   = out_shape[2];
+    dim3 blockDims(TILE, TILE, 1);
+    dim3 gridDims((out_row + TILE - 1) / TILE,
+                  (out_col + TILE - 1) / TILE,
+                  out_batch);
     MatrixMultiplyKernel<<<gridDims, blockDims>>>(
         d_out, d_out_shape, d_out_strides, d_a, d_a_shape, d_a_strides, d_b, d_b_shape, d_b_strides);
 
@@ -802,9 +829,9 @@ extern "C"
     // Launch kernel
     int threadsPerBlock = 256;                 
     int blocksPerGrid   = out_size;            
-    size_t shmemBytes   = threadsPerBlock * sizeof(float);
+    size_t sharedMemBytes   = threadsPerBlock * sizeof(float);
 
-    reduceKernel<<<blocksPerGrid, threadsPerBlock, shmemBytes>>>(
+    reduceKernel<<<blocksPerGrid, threadsPerBlock, sharedMemBytes>>>(
         d_out, d_out_shape, d_out_strides, out_size,
         d_a, d_a_shape, d_a_strides,
         reduce_dim, reduce_value, shape_size, fn_id);
