@@ -1,0 +1,9 @@
+# Python cache
+__pycache__/
+*.pyc
+
+# Hypothesis
+.hypothesis/
+
+# Optional: build artifacts (only if generated)
+minitorch.egg-info/

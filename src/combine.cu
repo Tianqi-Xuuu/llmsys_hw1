@@ -267,8 +267,26 @@ __global__ void mapKernel(
   // 4. Calculate the position of element in in_array according to in_index and in_strides
   // 5. Calculate the position of element in out_array according to out_index and out_strides
   // 6. Apply the unary function to the input element and write the output to the out memory
+  
+  // 1.
+  int global_id = (int)(blockIdx.x * blockDim.x + threadIdx.x);
+  if (global_id >= out_size) return;
 
-  assert(false && "Not Implemented");
+  // 2.
+  to_index(global_id, out_shape, out_index, shape_size);
+
+  // 3.
+  broadcast_index(out_index, out_shape, in_shape, in_index, shape_size, shape_size);
+
+  // 4.
+  int in_pos = index_to_position(in_index, in_strides, shape_size);
+
+  // 5.
+  int out_pos = index_to_position(out_index, out_strides, shape_size);
+
+  // 6.
+  out[out_pos] = fn(fn_id, in_storage[in_pos]);
+
   /// END HW1_1
 }
 
@@ -334,7 +352,31 @@ __global__ void zipKernel(
   // 7.Calculate the position of element in b_array according to b_index and b_strides
   // 8. Apply the binary function to the input elements in a_array & b_array and write the output to the out memory
 
-  assert(false && "Not Implemented");
+  // 1.
+  int global_id = (int)(blockIdx.x * blockDim.x + threadIdx.x);
+  if (global_id >= out_size) return;
+
+  // 2.
+  to_index(global_id, out_shape, out_index, out_shape_size);
+
+  // 3.
+  int out_pos = index_to_position(out_index, out_strides, out_shape_size);
+
+  // 4.
+  broadcast_index(out_index, out_shape, a_shape, a_index, out_shape_size, a_shape_size);
+
+  // 5.
+  int a_pos = index_to_position(a_index, a_strides, a_shape_size);
+
+  // 6.
+  broadcast_index(out_index, out_shape, b_shape, b_index, out_shape_size, b_shape_size);
+
+  // 7.
+  int b_pos = index_to_position(b_index, b_strides, b_shape_size);
+
+  // 8.
+  out[out_pos] = fn(fn_id, a_storage[a_pos], b_storage[b_pos]);
+
   /// END HW1_2
 }
 
@@ -390,7 +432,33 @@ __global__ void reduceKernel(
   // 4. Iterate over the reduce_dim dimension of the input array to compute the reduced value
   // 5. Write the reduced value to out memory
 
-  assert(false && "Not Implemented");
+  // 1.
+  int global_id = (int)(blockIdx.x * blockDim.x + threadIdx.x);
+  if (global_id >= out_size) return;
+  to_index(global_id, out_shape, out_index, shape_size);
+
+  // 2.
+  int out_pos = index_to_position(out_index, out_strides, shape_size);
+
+  // 3.
+  int reduce_len = a_shape[reduce_dim];
+  int a_index[MAX_DIMS];
+  for (int d = 0; d < shape_size; d++){
+    a_index[d] = out_index[d];
+  }
+  a_index[reduce_dim] = 0;
+  int base_pos = index_to_position(a_index, a_strides, shape_size);
+  int step = a_strides[reduce_dim];
+
+  // 4.
+  float result = reduce_value;
+  for (int i = 0; i < reduce_len; i++){
+    int a_pos = base_pos + i * step;
+    result = fn(fn_id, result, a_storage[a_pos]);
+  }
+
+  /// 5.
+  out[out_pos] = result;
   /// END HW1_3
 }
 
@@ -430,8 +498,8 @@ __global__ void MatrixMultiplyKernel(
    *   None (Fills in out array)
    */
 
-  __shared__ float a_shared[TILE][TILE];
-  __shared__ float b_shared[TILE][TILE];
+  // __shared__ float a_shared[TILE][TILE];
+  // __shared__ float b_shared[TILE][TILE];
 
   // In each block, we will compute a batch of the output matrix
   // All the threads in the block will work together to compute this batch
@@ -440,7 +508,6 @@ __global__ void MatrixMultiplyKernel(
   int b_batch_stride = b_shape[0] > 1 ? b_strides[0] : 0;
 
   /// BEGIN HW1_4
-  /// TODO
   // Hints:
   // 1. Compute the row and column of the output matrix this block will compute
   // 2. Compute the position in the output array that this thread will write to
@@ -450,7 +517,27 @@ __global__ void MatrixMultiplyKernel(
   // 6. Synchronize to make sure all threads are done computing the output tile for (row, col)
   // 7. Write the output to global memory
 
-  assert(false && "Not Implemented");
+  // 1.
+  int row = blockIdx.x * blockDim.x + threadIdx.x;
+  int col = blockIdx.y * blockDim.y + threadIdx.y;
+  if (row >= out_shape[1] || col >= out_shape[2]) return;
+  int n = a_shape[2];
+
+  // 2.
+  int out_pos = batch * out_strides[0] + row * out_strides[1] + col * out_strides[2];
+
+  // 3-5. Naive matmul without tiling/shared memory.
+  float acc = 0.0f;
+  int a_base = batch * a_batch_stride + row * a_strides[1];
+  int b_base = batch * b_batch_stride + col * b_strides[2];
+  for (int k = 0; k < n; ++k)
+  {
+    acc += a_storage[a_base + k * a_strides[2]] * b_storage[b_base + k * b_strides[1]];
+  }
+
+  // 7.
+  out[out_pos] = acc;
+  
   /// END HW1_4
 }
 
